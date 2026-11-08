@@ -1,0 +1,1 @@
+{"test_accuracy":0.9202127659574468,"_step":0,"test_f1_weighted":0.9192578483900607,"_timestamp":1.7926922616139338e+09,"_wandb":{"runtime":3},"test_f1_macro":0.8886597660251226,"val_f1_weighted":0.9349304111342184,"train_f1_macro":1,"val_f1_macro":0.8761069340016708,"train_accuracy":1,"train_f1_weighted":1,"_runtime":3,"val_accuracy":0.9361702127659575}

@@ -1,0 +1,9 @@
+2026-11-08 13:44:22,811 INFO    MainThread:12548 [wandb_setup.py:_flush():81] Current SDK version is 0.31.0
+2026-11-08 13:44:22,812 INFO    MainThread:12548 [wandb_setup.py:_flush():81] Configure stats pid to 12548
+2026-11-08 13:44:22,812 INFO    MainThread:12548 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-11-08 13:44:22,812 INFO    MainThread:12548 [wandb_init.py:setup_run_log_directory():740] Logging user logs to C:\Users\Kanishk\Desktop\cyclone-preparedness\wandb\offline-run-20261108_134422-n54kxmg5\logs\debug.log
+2026-11-08 13:44:22,812 INFO    MainThread:12548 [wandb_init.py:setup_run_log_directory():741] Logging internal logs to C:\Users\Kanishk\Desktop\cyclone-preparedness\wandb\offline-run-20261108_134422-n54kxmg5\logs\debug-internal.log
+2026-11-08 13:44:22,813 INFO    MainThread:12548 [wandb_init.py:init():784] calling init triggers
+2026-11-08 13:44:22,813 INFO    MainThread:12548 [wandb_init.py:init():789] wandb.init called with sweep_config: {}
+config: {'task': 'regression', 'model': 'ridge', 'split': '60_20_20', 'features': 26, 'quality_gate_threshold_r2': 0.9, 'quality_gate_threshold_rmse': 10.0, '_wandb': {}}
+2026-11-08 13:44:22,813 INFO    MainThread:12548 [wandb_init.py:init():832] starting backend

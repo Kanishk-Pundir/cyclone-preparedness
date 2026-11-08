@@ -1,0 +1,15 @@
+{
+  "os":  "Windows-10-10.0.26300-SP0",
+  "python":  "CPython 3.11.5",
+  "startedAt":  "2026-10-22T18:03:58.884354Z",
+  "args":  [
+    "-f",
+    "C:\\Users\\Kanishk\\AppData\\Local\\Temp\\tmpf0t4begs.json",
+    "--HistoryManager.hist_file=:memory:"
+  ],
+  "program":  "<python with no main file>",
+  "root":  "C:\\Users\\Kanishk\\Desktop\\cyclone-preparedness\\notebooks",
+  "host":  "LAPTOP-FPKH6O9T",
+  "executable":  "C:\\Program Files\\Python311\\python.exe",
+  "writerId":  "01a164c8-ba31-7919-aafa-f4a77d669761"
+}

@@ -1,0 +1,29 @@
+{
+  "os":  "Windows-10-10.0.26300-SP0",
+  "python":  "CPython 3.11.5",
+  "startedAt":  "2026-10-22T18:04:12.407013Z",
+  "args":  [
+    "-f",
+    "C:\\Users\\Kanishk\\AppData\\Local\\Temp\\tmpf0t4begs.json",
+    "--HistoryManager.hist_file=:memory:"
+  ],
+  "program":  "<python with no main file>",
+  "root":  "C:\\Users\\Kanishk\\Desktop\\cyclone-preparedness\\notebooks",
+  "host":  "LAPTOP-FPKH6O9T",
+  "executable":  "C:\\Program Files\\Python311\\python.exe",
+  "cpu_count":  12,
+  "cpu_count_logical":  16,
+  "disk":  {
+    "/":  {
+      "total":  "510404136960",
+      "used":  "383439671296"
+    }
+  },
+  "memory":  {
+    "total":  "16858959872"
+  },
+  "cpu":  {
+    "model":  "12th Gen Intel(R) Core(TM) i5-1240P"
+  },
+  "writerId":  "01a164c8-ef05-7264-a537-c7db09849a0c"
+}
