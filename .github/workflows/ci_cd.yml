@@ -1,0 +1,212 @@
+name: CI/CD — Cyclone Preparedness Phase 2
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:   # allow manual trigger from GitHub UI
+
+env:
+  PYTHON_VERSION: "3.11"
+  WANDB_MODE: "offline"      # offline so CI doesn't need live W&B auth
+  REGISTRY_IMAGE: cyclone-preparedness-api
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ── JOB 1: Lint & Static Checks ───────────────────────────────────────────
+  lint:
+    name: Lint & Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install flake8 black isort
+
+      - name: Flake8 (PEP8 compliance)
+        run: flake8 src/ app/ tests/ --max-line-length=110 --ignore=E203,W503
+
+      - name: Black (formatting check)
+        run: black --check --line-length 110 src/ app/ tests/
+
+      - name: isort (import order check)
+        run: isort --check-only src/ app/ tests/
+
+  # ── JOB 2: Retrain All Models ─────────────────────────────────────────────
+  train:
+    name: Retrain Models & Build Registry
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true        # pull Git LFS blobs (parquet files)
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run training pipeline
+        env:
+          WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+          WANDB_MODE: ${{ env.WANDB_MODE }}
+        run: python src/models/train_and_register.py
+
+      - name: Upload registry manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: registry-manifest
+          path: models/registry/registry_manifest.json
+          retention-days: 30
+
+      - name: Upload trained model files
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-models
+          path: models/registry/*.joblib
+          retention-days: 30
+
+  # ── JOB 3: Quality Gate ───────────────────────────────────────────────────
+  quality-gate:
+    name: Model Quality & Risk Checks
+    runs-on: ubuntu-latest
+    needs: train
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download trained models from previous job
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models
+          path: models/registry/
+
+      - name: Download registry manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: registry-manifest
+          path: models/registry/
+
+      - name: Run quality checks (exit 1 if any check fails)
+        run: python src/models/quality_checks.py
+
+  # ── JOB 4: API Tests ──────────────────────────────────────────────────────
+  test-api:
+    name: FastAPI Endpoint Tests
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest httpx
+
+      - name: Download trained models
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models
+          path: models/registry/
+
+      - name: Download registry manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: registry-manifest
+          path: models/registry/
+
+      - name: Run API tests
+        run: pytest tests/test_api.py -v --tb=short
+
+  # ── JOB 5: Docker Build ───────────────────────────────────────────────────
+  docker-build:
+    name: Docker Build & Smoke Test
+    runs-on: ubuntu-latest
+    needs: test-api
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Download trained models
+        uses: actions/download-artifact@v4
+        with:
+          name: trained-models
+          path: models/registry/
+
+      - name: Download registry manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: registry-manifest
+          path: models/registry/
+
+      - name: Build Docker image
+        run: docker build -t ${{ env.REGISTRY_IMAGE }}:${{ github.sha }} .
+
+      - name: Smoke test — start container and hit /health
+        run: |
+          docker run -d --name api-smoke-test \
+            -p 8000:8000 \
+            ${{ env.REGISTRY_IMAGE }}:${{ github.sha }}
+          sleep 20
+          curl -f http://localhost:8000/health || (docker logs api-smoke-test && exit 1)
+          docker stop api-smoke-test
+
+      - name: Tag image as latest (main branch only)
+        if: github.ref == 'refs/heads/main'
+        run: docker tag ${{ env.REGISTRY_IMAGE }}:${{ github.sha }} ${{ env.REGISTRY_IMAGE }}:latest
+
+      # ── Optional: Push to Docker Hub (uncomment + add secrets) ──────────────
+      # - name: Push to Docker Hub
+      #   if: github.ref == 'refs/heads/main'
+      #   run: |
+      #     echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+      #     docker push ${{ env.REGISTRY_IMAGE }}:${{ github.sha }}
+      #     docker push ${{ env.REGISTRY_IMAGE }}:latest
+
+  # ── JOB 6: Deploy to Render (main branch only) ───────────────────────────
+  deploy:
+    name: Deploy to Render
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Trigger Render Deploy Hook
+        # Add RENDER_DEPLOY_HOOK_URL as a GitHub repository secret
+        # Get the hook URL from: Render Dashboard > Service > Settings > Deploy Hook
+        run: |
+          if [ -n "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" ]; then
+            curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+            echo "Render deploy triggered."
+          else
+            echo "RENDER_DEPLOY_HOOK_URL not set — skipping deploy. Add it in GitHub Secrets."
+          fi

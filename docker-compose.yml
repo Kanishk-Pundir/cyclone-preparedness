@@ -1,0 +1,43 @@
+version: "3.9"
+
+services:
+  # ── Inference API ────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cyclone-preparedness-api
+    ports:
+      - "8000:8000"
+    environment:
+      - WANDB_API_KEY=${WANDB_API_KEY:-}
+      - WANDB_MODE=${WANDB_MODE:-offline}
+    volumes:
+      # Mount registry so hot-swap of models is possible without rebuild
+      - ./models/registry:/app/models/registry:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Optional: Streamlit Dashboard (Phase 2 / UI layer) ───────────────────────
+  # Uncomment when dashboard is built
+  # dashboard:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.streamlit
+  #   container_name: cyclone-preparedness-dashboard
+  #   ports:
+  #     - "8501:8501"
+  #   depends_on:
+  #     - api
+  #   environment:
+  #     - API_URL=http://api:8000
+  #   restart: unless-stopped
+
+networks:
+  default:
+    name: cyclone-network
