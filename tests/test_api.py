@@ -6,24 +6,24 @@ Tests endpoints directly and via AsyncClient / TestClient.
 """
 
 import sys
-import pytest
-import numpy as np
 from pathlib import Path
 
-# Add app to path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import pytest
 
-import app.main as m
-from app.main import (
-    app,
+# Add project root to path before importing application modules
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from app.main import (  # noqa: E402
+    BatchRequest,
+    VillageFeatures,
     _load_champion_models,
     health,
     model_info,
     predict,
     predict_batch,
     predict_sample,
-    VillageFeatures,
-    BatchRequest
 )
 
 # Ensure models are loaded in memory for testing
@@ -134,4 +134,3 @@ class TestInputValidation:
         bad["road_connectivity_score"] = 5.0
         with pytest.raises(Exception):
             VillageFeatures(**bad)
-

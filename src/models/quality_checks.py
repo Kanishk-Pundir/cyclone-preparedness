@@ -15,22 +15,18 @@ Exit code 0 = all checks passed. Exit code 1 = one or more checks failed.
 Used as a step in GitHub Actions CI/CD pipeline.
 """
 
-import sys
 import json
+import sys
+from pathlib import Path
+
 import joblib
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from sklearn.preprocessing import LabelEncoder, RobustScaler
-from sklearn.metrics import (
-    r2_score, mean_squared_error, f1_score,
-    accuracy_score, confusion_matrix, recall_score
-)
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import recall_score
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "models" / "registry" / "registry_manifest.json"
-DATA_PATH     = ROOT / "data" / "processed" / "modelling_dataset.parquet"
+DATA_PATH = ROOT / "data" / "processed" / "modelling_dataset.parquet"
 
 FAIL = False  # tracks any check failure
 
@@ -44,7 +40,7 @@ def header(title):
 def check(name, condition, detail=""):
     global FAIL
     status = "PASS" if condition else "FAIL"
-    icon   = "v" if condition else "X"
+    icon = "v" if condition else "X"
     print(f"  [{icon}] {status} | {name}" + (f" — {detail}" if detail else ""))
     if not condition:
         FAIL = True
@@ -65,23 +61,39 @@ def load_model(entry):
         return None, None
     art = joblib.load(fpath)
     pipe = art.get("pipeline")
-    le   = art.get("label_encoder")
+    le = art.get("label_encoder")
     return pipe, le
 
 
 def load_dataset():
     df = pd.read_parquet(DATA_PATH)
     MODEL_FEATURES = [
-        "dist_coast_km", "elevation_mean", "avg_household_size",
-        "sc_share", "st_share", "vulnerable_pop_share",
-        "road_connectivity_score", "drinking_water_score",
-        "n_hc_10km", "n_phc_chc_10km", "n_gauges_20km", "n_shelters_10km",
-        "cvi_physical", "cvi_social",
-        "has_pucca_road", "has_major_district_road", "bus_connectivity",
-        "log1p_population", "log1p_pop_density_sqkm",
-        "log1p_dist_nearest_shelter_km", "log1p_dist_nearest_hospital_km",
-        "coastal_risk_score", "evacuation_sufficiency",
-        "vulnerability_exposure", "infra_composite", "monitoring_coverage",
+        "dist_coast_km",
+        "elevation_mean",
+        "avg_household_size",
+        "sc_share",
+        "st_share",
+        "vulnerable_pop_share",
+        "road_connectivity_score",
+        "drinking_water_score",
+        "n_hc_10km",
+        "n_phc_chc_10km",
+        "n_gauges_20km",
+        "n_shelters_10km",
+        "cvi_physical",
+        "cvi_social",
+        "has_pucca_road",
+        "has_major_district_road",
+        "bus_connectivity",
+        "log1p_population",
+        "log1p_pop_density_sqkm",
+        "log1p_dist_nearest_shelter_km",
+        "log1p_dist_nearest_hospital_km",
+        "coastal_risk_score",
+        "evacuation_sufficiency",
+        "vulnerability_exposure",
+        "infra_composite",
+        "monitoring_coverage",
     ]
     available = [f for f in MODEL_FEATURES if f in df.columns]
     X = df[available].fillna(0)
@@ -91,6 +103,7 @@ def load_dataset():
 
 
 # ── 1. MANIFEST CHECKS ───────────────────────────────────────────────────────
+
 
 def check_manifest(manifest):
     header("Registry Manifest Integrity")
@@ -104,46 +117,41 @@ def check_manifest(manifest):
 
     if champ_reg:
         qg = manifest["quality_gate_thresholds"]
-        r2   = champ_reg["metrics"].get("test_r2", 0)
+        r2 = champ_reg["metrics"].get("test_r2", 0)
         rmse = champ_reg["metrics"].get("test_rmse", 999)
         check(
             f"Champion regressor R2 >= {qg['regression_r2_min']}",
             r2 >= qg["regression_r2_min"],
-            f"R2={r2:.4f}"
+            f"R2={r2:.4f}",
         )
         check(
             f"Champion regressor RMSE <= {qg['regression_rmse_max']}",
             rmse <= qg["regression_rmse_max"],
-            f"RMSE={rmse:.4f}"
+            f"RMSE={rmse:.4f}",
         )
-        check(
-            "Champion regressor quality gate = PASS",
-            champ_reg.get("quality_gate") == "PASS"
-        )
+        check("Champion regressor quality gate = PASS", champ_reg.get("quality_gate") == "PASS")
 
     if champ_cls:
-        qg  = manifest["quality_gate_thresholds"]
-        f1  = champ_cls["metrics"].get("test_f1_macro", 0)
+        qg = manifest["quality_gate_thresholds"]
+        f1 = champ_cls["metrics"].get("test_f1_macro", 0)
         acc = champ_cls["metrics"].get("test_accuracy", 0)
         check(
             f"Champion classifier Macro F1 >= {qg['classification_f1_min']}",
             f1 >= qg["classification_f1_min"],
-            f"F1={f1:.4f}"
+            f"F1={f1:.4f}",
         )
         check(
             f"Champion classifier Accuracy >= {qg['classification_acc_min']}",
             acc >= qg["classification_acc_min"],
-            f"Acc={acc:.4f}"
+            f"Acc={acc:.4f}",
         )
-        check(
-            "Champion classifier quality gate = PASS",
-            champ_cls.get("quality_gate") == "PASS"
-        )
+        check("Champion classifier quality gate = PASS", champ_cls.get("quality_gate") == "PASS")
 
     return champ_reg, champ_cls
 
 
 # ── 2. OVERFITTING GAP CHECK ─────────────────────────────────────────────────
+
 
 def check_overfitting(champ_reg, champ_cls):
     header("Overfitting / Generalization Gap Check")
@@ -151,23 +159,16 @@ def check_overfitting(champ_reg, champ_cls):
     if champ_reg:
         m = champ_reg["metrics"]
         gap_r2 = abs(m.get("train_r2", 0) - m.get("test_r2", 0))
-        check(
-            "Regression train-test R2 gap < 0.05",
-            gap_r2 < 0.05,
-            f"gap={gap_r2:.4f}"
-        )
+        check("Regression train-test R2 gap < 0.05", gap_r2 < 0.05, f"gap={gap_r2:.4f}")
 
     if champ_cls:
         m = champ_cls["metrics"]
         gap_f1 = abs(m.get("train_f1_macro", 0) - m.get("test_f1_macro", 0))
-        check(
-            "Classification train-test F1 gap < 0.08",
-            gap_f1 < 0.08,
-            f"gap={gap_f1:.4f}"
-        )
+        check("Classification train-test F1 gap < 0.08", gap_f1 < 0.08, f"gap={gap_f1:.4f}")
 
 
 # ── 3. PER-DISTRICT FAIRNESS CHECK ───────────────────────────────────────────
+
 
 def check_fairness(reg_pipe, X, y_reg, df):
     header("Per-District Fairness / Bias Check")
@@ -190,14 +191,11 @@ def check_fairness(reg_pipe, X, y_reg, df):
 
     if len(mean_errors) > 1:
         gap = max(mean_errors.values()) - min(mean_errors.values())
-        check(
-            "Max inter-district MAE gap < 5.0 pts",
-            gap < 5.0,
-            f"gap={gap:.2f} pts"
-        )
+        check("Max inter-district MAE gap < 5.0 pts", gap < 5.0, f"gap={gap:.2f} pts")
 
 
 # ── 4. LOW-TIER RECALL AUDIT ─────────────────────────────────────────────────
+
 
 def check_low_tier_recall(cls_pipe, le, X, y_cls_raw):
     header("Low Preparedness Tier Recall Audit")
@@ -211,19 +209,18 @@ def check_low_tier_recall(cls_pipe, le, X, y_cls_raw):
 
     classes = le.classes_
     for cls_name in classes:
-        cls_idx    = list(classes).index(cls_name)
+        cls_idx = list(classes).index(cls_name)
         binary_true = (y_enc == cls_idx).astype(int)
         binary_pred = (preds == cls_idx).astype(int)
         recall = recall_score(binary_true, binary_pred, zero_division=0)
         threshold = 0.70 if cls_name == "Low" else 0.60
         check(
-            f"Recall for class '{cls_name}' >= {threshold:.0%}",
-            recall >= threshold,
-            f"recall={recall:.3f}"
+            f"Recall for class '{cls_name}' >= {threshold:.0%}", recall >= threshold, f"recall={recall:.3f}"
         )
 
 
 # ── 5. EDGE CASE STRESS TEST ─────────────────────────────────────────────────
+
 
 def check_edge_cases(reg_pipe, cls_pipe, le, available_features):
     header("Edge Case Stress Tests")
@@ -237,12 +234,10 @@ def check_edge_cases(reg_pipe, cls_pipe, le, available_features):
         check(
             "All-zero input returns finite regression prediction",
             np.isfinite(pred_zero),
-            f"pred={pred_zero:.2f}"
+            f"pred={pred_zero:.2f}",
         )
         check(
-            "All-zero prediction within valid range [0, 100]",
-            0 <= pred_zero <= 100,
-            f"pred={pred_zero:.2f}"
+            "All-zero prediction within valid range [0, 100]", 0 <= pred_zero <= 100, f"pred={pred_zero:.2f}"
         )
 
     if cls_pipe is not None:
@@ -253,21 +248,18 @@ def check_edge_cases(reg_pipe, cls_pipe, le, available_features):
         check(
             "All-zero input returns valid class label",
             pred_label in ["Low", "Medium", "High"],
-            f"pred={pred_label}"
+            f"pred={pred_label}",
         )
 
         # Has predict_proba?
         has_proba = hasattr(cls_pipe.named_steps.get("model", object()), "predict_proba")
         if has_proba:
             proba = cls_pipe.predict_proba(X_zero)[0]
-            check(
-                "predict_proba sums to ~1.0",
-                abs(proba.sum() - 1.0) < 1e-6,
-                f"sum={proba.sum():.6f}"
-            )
+            check("predict_proba sums to ~1.0", abs(proba.sum() - 1.0) < 1e-6, f"sum={proba.sum():.6f}")
 
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
+
 
 def main():
     print("=" * 70)
@@ -280,7 +272,7 @@ def main():
 
     X, y_reg, y_cls_raw, df, available = load_dataset()
 
-    reg_pipe, _  = load_model(champ_reg) if champ_reg else (None, None)
+    reg_pipe, _ = load_model(champ_reg) if champ_reg else (None, None)
     cls_pipe, le = load_model(champ_cls) if champ_cls else (None, None)
 
     check_fairness(reg_pipe, X, y_reg, df)

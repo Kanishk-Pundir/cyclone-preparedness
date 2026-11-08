@@ -14,44 +14,60 @@ The service loads champion models from models/registry/registry_manifest.json
 at startup. No scikit-learn retraining at runtime.
 """
 
-import os
-import sys
 import json
 import time
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import joblib
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Optional, List, Dict, Any
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-ROOT         = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "models" / "registry" / "registry_manifest.json"
 
 # ── Feature list (must match training) ───────────────────────────────────────
 MODEL_FEATURES = [
-    "dist_coast_km", "elevation_mean", "avg_household_size",
-    "sc_share", "st_share", "vulnerable_pop_share",
-    "road_connectivity_score", "drinking_water_score",
-    "n_hc_10km", "n_phc_chc_10km", "n_gauges_20km", "n_shelters_10km",
-    "cvi_physical", "cvi_social",
-    "has_pucca_road", "has_major_district_road", "bus_connectivity",
-    "log1p_population", "log1p_pop_density_sqkm",
-    "log1p_dist_nearest_shelter_km", "log1p_dist_nearest_hospital_km",
-    "coastal_risk_score", "evacuation_sufficiency",
-    "vulnerability_exposure", "infra_composite", "monitoring_coverage",
+    "dist_coast_km",
+    "elevation_mean",
+    "avg_household_size",
+    "sc_share",
+    "st_share",
+    "vulnerable_pop_share",
+    "road_connectivity_score",
+    "drinking_water_score",
+    "n_hc_10km",
+    "n_phc_chc_10km",
+    "n_gauges_20km",
+    "n_shelters_10km",
+    "cvi_physical",
+    "cvi_social",
+    "has_pucca_road",
+    "has_major_district_road",
+    "bus_connectivity",
+    "log1p_population",
+    "log1p_pop_density_sqkm",
+    "log1p_dist_nearest_shelter_km",
+    "log1p_dist_nearest_hospital_km",
+    "coastal_risk_score",
+    "evacuation_sufficiency",
+    "vulnerability_exposure",
+    "infra_composite",
+    "monitoring_coverage",
 ]
+
 
 # ── App State ─────────────────────────────────────────────────────────────────
 class AppState:
-    reg_pipe  = None
-    cls_pipe  = None
-    le        = None
-    manifest  = None
+    reg_pipe = None
+    cls_pipe = None
+    le = None
+    manifest = None
     startup_time = None
     available_features: List[str] = []
 
@@ -59,14 +75,16 @@ class AppState:
 state = AppState()
 
 # ── Lifespan Context Manager: Load Models on Startup ────────────────────────
-from contextlib import asynccontextmanager
+
 
 def _load_champion_models():
     state.startup_time = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     if not MANIFEST_PATH.exists():
-        print(f"[WARN] Registry manifest not found at {MANIFEST_PATH}. "
-              f"Endpoints will return 503 until models are trained.")
+        print(
+            f"[WARN] Registry manifest not found at {MANIFEST_PATH}. "
+            f"Endpoints will return 503 until models are trained."
+        )
         return
 
     with open(MANIFEST_PATH, encoding="utf-8") as f:
@@ -81,7 +99,7 @@ def _load_champion_models():
         art = joblib.load(fpath)
         return art.get("pipeline"), art.get("label_encoder")
 
-    state.reg_pipe, _    = _load(state.manifest.get("champion_regression"))
+    state.reg_pipe, _ = _load(state.manifest.get("champion_regression"))
     state.cls_pipe, state.le = _load(state.manifest.get("champion_classification"))
     state.available_features = MODEL_FEATURES
 
@@ -89,10 +107,12 @@ def _load_champion_models():
     cls_name = state.manifest.get("champion_classification", {}).get("model_name", "none")
     print(f"[OK] Models loaded. Regressor: {reg_name} | Classifier: {cls_name}")
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _load_champion_models()
     yield
+
 
 # ── FastAPI App ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -250,22 +270,23 @@ def engineer_features(v: VillageFeatures) -> pd.DataFrame:
     if d.get("vulnerability_exposure") is None:
         cvi = d.get("cvi_integrated") or d.get("cvi_physical") or 3.0
         d["vulnerability_exposure"] = float(
-            0.5 * (cvi / 5.0) +
-            0.3 * (1 - min(d["dist_coast_km"] / 100.0, 1.0)) +
-            0.2 * d["vulnerable_pop_share"]
+            0.5 * (cvi / 5.0)
+            + 0.3 * (1 - min(d["dist_coast_km"] / 100.0, 1.0))
+            + 0.2 * d["vulnerable_pop_share"]
         )
 
     if d.get("infra_composite") is None:
         d["infra_composite"] = float(
-            (d["road_connectivity_score"] / 3.0 +
-             d["drinking_water_score"] / 2.0 +
-             float(d["bus_connectivity"])) / 3.0
+            (
+                d["road_connectivity_score"] / 3.0
+                + d["drinking_water_score"] / 2.0
+                + float(d["bus_connectivity"])
+            )
+            / 3.0
         )
 
     if d.get("monitoring_coverage") is None:
-        d["monitoring_coverage"] = float(
-            min(d["n_gauges_20km"] / 50.0, 1.0) * 0.4 + 0.6
-        )
+        d["monitoring_coverage"] = float(min(d["n_gauges_20km"] / 50.0, 1.0) * 0.4 + 0.6)
 
     row = {f: d.get(f, 0.0) for f in MODEL_FEATURES}
     return pd.DataFrame([row])
@@ -273,15 +294,21 @@ def engineer_features(v: VillageFeatures) -> pd.DataFrame:
 
 def interpret(score: float, tier: str) -> str:
     if tier == "Low":
-        return (f"Score {score:.1f}/100 — HIGH RISK. Village has critical gaps in "
-                f"shelter capacity, healthcare access, or evacuation infrastructure. "
-                f"Priority intervention required before cyclone season.")
+        return (
+            f"Score {score:.1f}/100 — HIGH RISK. Village has critical gaps in "
+            f"shelter capacity, healthcare access, or evacuation infrastructure. "
+            f"Priority intervention required before cyclone season."
+        )
     elif tier == "Medium":
-        return (f"Score {score:.1f}/100 — MODERATE RISK. Village has basic preparedness "
-                f"infrastructure but significant gaps remain. Targeted improvements recommended.")
+        return (
+            f"Score {score:.1f}/100 — MODERATE RISK. Village has basic preparedness "
+            f"infrastructure but significant gaps remain. Targeted improvements recommended."
+        )
     else:
-        return (f"Score {score:.1f}/100 — LOW RISK. Village demonstrates adequate preparedness "
-                f"across shelter, medical, infrastructure, and early warning dimensions.")
+        return (
+            f"Score {score:.1f}/100 — LOW RISK. Village demonstrates adequate preparedness "
+            f"across shelter, medical, infrastructure, and early warning dimensions."
+        )
 
 
 def risk_label(tier: str) -> str:
@@ -290,10 +317,7 @@ def risk_label(tier: str) -> str:
 
 def predict_single(v: VillageFeatures) -> PredictionResponse:
     if state.reg_pipe is None or state.cls_pipe is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Models not loaded. Run train_and_register.py first."
-        )
+        raise HTTPException(status_code=503, detail="Models not loaded. Run train_and_register.py first.")
 
     X = engineer_features(v)
 
@@ -308,10 +332,7 @@ def predict_single(v: VillageFeatures) -> PredictionResponse:
     proba_dict = None
     if hasattr(state.cls_pipe.named_steps.get("model", object()), "predict_proba"):
         proba = state.cls_pipe.predict_proba(X_in)[0]
-        proba_dict = {
-            str(state.le.classes_[i]): round(float(p), 4)
-            for i, p in enumerate(proba)
-        }
+        proba_dict = {str(state.le.classes_[i]): round(float(p), 4) for i, p in enumerate(proba)}
 
     champ_reg = state.manifest.get("champion_regression", {})
     champ_cls = state.manifest.get("champion_classification", {})
@@ -323,10 +344,10 @@ def predict_single(v: VillageFeatures) -> PredictionResponse:
         risk_level=risk_label(tier),
         interpretation=interpret(score, tier),
         model_info={
-            "regressor" : champ_reg.get("model_name", "unknown"),
+            "regressor": champ_reg.get("model_name", "unknown"),
             "classifier": champ_cls.get("model_name", "unknown"),
-            "split"     : champ_reg.get("split_label", "unknown"),
-        }
+            "split": champ_reg.get("split_label", "unknown"),
+        },
     )
 
 
@@ -334,10 +355,10 @@ def predict_single(v: VillageFeatures) -> PredictionResponse:
 @app.get("/health", tags=["System"])
 def health():
     return {
-        "status"      : "ok" if state.reg_pipe else "degraded",
+        "status": "ok" if state.reg_pipe else "degraded",
         "models_loaded": state.reg_pipe is not None,
-        "startup_time" : state.startup_time,
-        "version"     : "2.0.0",
+        "startup_time": state.startup_time,
+        "version": "2.0.0",
     }
 
 
@@ -346,10 +367,10 @@ def model_info():
     if state.manifest is None:
         raise HTTPException(status_code=503, detail="Manifest not loaded.")
     return {
-        "champion_regression"    : state.manifest.get("champion_regression"),
+        "champion_regression": state.manifest.get("champion_regression"),
         "champion_classification": state.manifest.get("champion_classification"),
         "quality_gate_thresholds": state.manifest.get("quality_gate_thresholds"),
-        "registry_generated_at"  : state.manifest.get("generated_at"),
+        "registry_generated_at": state.manifest.get("generated_at"),
     }
 
 
@@ -376,7 +397,7 @@ def predict_batch(request: BatchRequest):
             "mean_score": round(np.mean([r.preparedness_score for r in results]), 2),
             "tier_counts": {t: tiers.count(t) for t in ["Low", "Medium", "High"]},
             "high_risk_count": tiers.count("Low"),
-        }
+        },
     )
 
 

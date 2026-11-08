@@ -29,43 +29,44 @@ Outputs:
   - W&B Model Registry artifacts (staged as "champion")
 """
 
+import json
 import os
 import sys
-import json
 import time
-import joblib
 import warnings
+from pathlib import Path
+
+import joblib
 import numpy as np
 import pandas as pd
+from sklearn.cluster import DBSCAN
+from sklearn.decomposition import PCA
+from sklearn.ensemble import (
+    AdaBoostClassifier,
+    AdaBoostRegressor,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+    RandomForestClassifier,
+    RandomForestRegressor,
+)
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    r2_score,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder, RobustScaler
+from sklearn.tree import DecisionTreeRegressor
+
+import wandb
 
 warnings.filterwarnings("ignore")
 if sys.stdout.encoding != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
-
-from pathlib import Path
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import RobustScaler, LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import (
-    r2_score, mean_squared_error, mean_absolute_error,
-    accuracy_score, f1_score, classification_report
-)
-
-# Regressors
-from sklearn.linear_model import Ridge
-from sklearn.ensemble import (
-    RandomForestRegressor, HistGradientBoostingRegressor,
-    AdaBoostRegressor, RandomForestClassifier,
-    HistGradientBoostingClassifier, AdaBoostClassifier
-)
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.linear_model import LogisticRegression
-
-# DBSCAN
-from sklearn.cluster import DBSCAN
-from sklearn.decomposition import PCA
-
-import wandb
 
 # W&B is skipped when WANDB_DISABLED=true (sandbox / no-API-key environments).
 # Models are still saved to models/registry/ locally.
@@ -82,23 +83,39 @@ REGISTRY_DIR.mkdir(parents=True, exist_ok=True)
 MANIFEST_PATH = REGISTRY_DIR / "registry_manifest.json"
 
 # ── Quality Gate Thresholds ───────────────────────────────────────────────────
-QG_REG_R2_MIN    = 0.90
-QG_REG_RMSE_MAX  = 10.0
-QG_CLS_F1_MIN    = 0.80
-QG_CLS_ACC_MIN   = 0.85
+QG_REG_R2_MIN = 0.90
+QG_REG_RMSE_MAX = 10.0
+QG_CLS_F1_MIN = 0.80
+QG_CLS_ACC_MIN = 0.85
 
 # ── Feature & Target Columns ─────────────────────────────────────────────────
 MODEL_FEATURES = [
-    "dist_coast_km", "elevation_mean", "avg_household_size",
-    "sc_share", "st_share", "vulnerable_pop_share",
-    "road_connectivity_score", "drinking_water_score",
-    "n_hc_10km", "n_phc_chc_10km", "n_gauges_20km", "n_shelters_10km",
-    "cvi_physical", "cvi_social",
-    "has_pucca_road", "has_major_district_road", "bus_connectivity",
-    "log1p_population", "log1p_pop_density_sqkm",
-    "log1p_dist_nearest_shelter_km", "log1p_dist_nearest_hospital_km",
-    "coastal_risk_score", "evacuation_sufficiency",
-    "vulnerability_exposure", "infra_composite", "monitoring_coverage",
+    "dist_coast_km",
+    "elevation_mean",
+    "avg_household_size",
+    "sc_share",
+    "st_share",
+    "vulnerable_pop_share",
+    "road_connectivity_score",
+    "drinking_water_score",
+    "n_hc_10km",
+    "n_phc_chc_10km",
+    "n_gauges_20km",
+    "n_shelters_10km",
+    "cvi_physical",
+    "cvi_social",
+    "has_pucca_road",
+    "has_major_district_road",
+    "bus_connectivity",
+    "log1p_population",
+    "log1p_pop_density_sqkm",
+    "log1p_dist_nearest_shelter_km",
+    "log1p_dist_nearest_hospital_km",
+    "coastal_risk_score",
+    "evacuation_sufficiency",
+    "vulnerability_exposure",
+    "infra_composite",
+    "monitoring_coverage",
 ]
 
 TARGET_REG = "preparedness_score"
@@ -111,9 +128,10 @@ SPLIT_CONFIGS = [
 ]
 
 WANDB_PROJECT = "cyclone-preparedness-phase2"
-WANDB_ENTITY  = None   # set via WANDB_ENTITY env var or leave None for personal
+WANDB_ENTITY = None  # set via WANDB_ENTITY env var or leave None for personal
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 
 def load_data():
     print(f"\nLoading modelling dataset from {DATA_PATH} ...")
@@ -121,48 +139,51 @@ def load_data():
 
     # Build engineered features if missing (idempotent)
     if "log1p_population" not in df.columns:
-        for feat in ["population", "pop_density_sqkm", "dist_nearest_hospital_km",
-                     "dist_nearest_shelter_km", "shelter_capacity_nearby",
-                     "shelter_capacity_per_capita"]:
+        for feat in [
+            "population",
+            "pop_density_sqkm",
+            "dist_nearest_hospital_km",
+            "dist_nearest_shelter_km",
+            "shelter_capacity_nearby",
+            "shelter_capacity_per_capita",
+        ]:
             if feat in df.columns:
                 df[f"log1p_{feat}"] = np.log1p(df[feat].clip(0))
 
     if "coastal_risk_score" not in df.columns:
         df["coastal_risk_score"] = (
-            np.exp(-df["dist_coast_km"] / 10.0) *
-            np.exp(-df["elevation_mean"] / 30.0)
+            np.exp(-df["dist_coast_km"] / 10.0) * np.exp(-df["elevation_mean"] / 30.0)
         ).round(4)
 
     if "evacuation_sufficiency" not in df.columns:
         pop_safe = df["population"].replace(0, np.nan)
         df["evacuation_sufficiency"] = (
-            df["shelter_capacity_nearby"] / pop_safe.fillna(1)
-        ).clip(0, 10).round(4)
+            (df["shelter_capacity_nearby"] / pop_safe.fillna(1)).clip(0, 10).round(4)
+        )
 
     if "vulnerability_exposure" not in df.columns:
         df["vulnerability_exposure"] = (
-            0.5 * (df["cvi_integrated"] / df["cvi_integrated"].max()) +
-            0.3 * (1 - df["dist_coast_km"] / df["dist_coast_km"].max()) +
-            0.2 * df["vulnerable_pop_share"]
+            0.5 * (df["cvi_integrated"] / df["cvi_integrated"].max())
+            + 0.3 * (1 - df["dist_coast_km"] / df["dist_coast_km"].max())
+            + 0.2 * df["vulnerable_pop_share"]
         ).round(4)
 
     if "infra_composite" not in df.columns:
         df["infra_composite"] = (
-            df["road_connectivity_score"] / 3.0 +
-            df["drinking_water_score"] / 2.0 +
-            df["bus_connectivity"].astype(float)
+            df["road_connectivity_score"] / 3.0
+            + df["drinking_water_score"] / 2.0
+            + df["bus_connectivity"].astype(float)
         ).round(4) / 3.0
 
     if "monitoring_coverage" not in df.columns:
         mx = df["dist_nearest_gauge_km"].max()
         mn = df["n_gauges_20km"].max()
         df["monitoring_coverage"] = (
-            (1 - df["dist_nearest_gauge_km"] / mx) * 0.6 +
-            (df["n_gauges_20km"] / mn) * 0.4
+            (1 - df["dist_nearest_gauge_km"] / mx) * 0.6 + (df["n_gauges_20km"] / mn) * 0.4
         ).round(4)
 
     available = [f for f in MODEL_FEATURES if f in df.columns]
-    missing   = [f for f in MODEL_FEATURES if f not in df.columns]
+    missing = [f for f in MODEL_FEATURES if f not in df.columns]
     if missing:
         print(f"  [WARN] Missing features (will be skipped): {missing}")
 
@@ -181,72 +202,94 @@ def load_data():
 
 def make_regression_pipelines():
     return {
-        "ridge": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", Ridge(alpha=10.0))
-        ]),
-        "random_forest_reg": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", RandomForestRegressor(
-                n_estimators=200, max_depth=12,
-                min_samples_leaf=5, random_state=42, n_jobs=-1
-            ))
-        ]),
-        "histgbt_reg": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", HistGradientBoostingRegressor(
-                max_iter=200, max_depth=5,
-                learning_rate=0.05, min_samples_leaf=20, random_state=42
-            ))
-        ]),
-        "adaboost_reg": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", AdaBoostRegressor(
-                estimator=DecisionTreeRegressor(max_depth=4),
-                n_estimators=150, learning_rate=0.1, random_state=42
-            ))
-        ]),
+        "ridge": Pipeline([("scaler", RobustScaler()), ("model", Ridge(alpha=10.0))]),
+        "random_forest_reg": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                (
+                    "model",
+                    RandomForestRegressor(
+                        n_estimators=200, max_depth=12, min_samples_leaf=5, random_state=42, n_jobs=-1
+                    ),
+                ),
+            ]
+        ),
+        "histgbt_reg": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                (
+                    "model",
+                    HistGradientBoostingRegressor(
+                        max_iter=200, max_depth=5, learning_rate=0.05, min_samples_leaf=20, random_state=42
+                    ),
+                ),
+            ]
+        ),
+        "adaboost_reg": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                (
+                    "model",
+                    AdaBoostRegressor(
+                        estimator=DecisionTreeRegressor(max_depth=4),
+                        n_estimators=150,
+                        learning_rate=0.1,
+                        random_state=42,
+                    ),
+                ),
+            ]
+        ),
     }
 
 
 def make_classification_pipelines():
     return {
-        "logistic_reg": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", LogisticRegression(
-                max_iter=1000, C=1.0, random_state=42,
-                solver="lbfgs"
-            ))
-        ]),
-        "random_forest_cls": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", RandomForestClassifier(
-                n_estimators=200, max_depth=12,
-                min_samples_leaf=5, class_weight="balanced",
-                random_state=42, n_jobs=-1
-            ))
-        ]),
-        "histgbt_cls": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", HistGradientBoostingClassifier(
-                max_iter=200, max_depth=5,
-                learning_rate=0.05, min_samples_leaf=20, random_state=42
-            ))
-        ]),
-        "adaboost_cls": Pipeline([
-            ("scaler", RobustScaler()),
-            ("model", AdaBoostClassifier(
-                n_estimators=150, learning_rate=0.1,
-                random_state=42
-            ))
-        ]),
+        "logistic_reg": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                ("model", LogisticRegression(max_iter=1000, C=1.0, random_state=42, solver="lbfgs")),
+            ]
+        ),
+        "random_forest_cls": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                (
+                    "model",
+                    RandomForestClassifier(
+                        n_estimators=200,
+                        max_depth=12,
+                        min_samples_leaf=5,
+                        class_weight="balanced",
+                        random_state=42,
+                        n_jobs=-1,
+                    ),
+                ),
+            ]
+        ),
+        "histgbt_cls": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                (
+                    "model",
+                    HistGradientBoostingClassifier(
+                        max_iter=200, max_depth=5, learning_rate=0.05, min_samples_leaf=20, random_state=42
+                    ),
+                ),
+            ]
+        ),
+        "adaboost_cls": Pipeline(
+            [
+                ("scaler", RobustScaler()),
+                ("model", AdaBoostClassifier(n_estimators=150, learning_rate=0.1, random_state=42)),
+            ]
+        ),
     }
 
 
 def run_quality_gate(task, metrics):
     """Returns (passed: bool, reason: str)"""
     if task == "regression":
-        r2   = metrics.get("test_r2", 0)
+        r2 = metrics.get("test_r2", 0)
         rmse = metrics.get("test_rmse", 999)
         if r2 < QG_REG_R2_MIN:
             return False, f"R2 {r2:.3f} < threshold {QG_REG_R2_MIN}"
@@ -254,7 +297,7 @@ def run_quality_gate(task, metrics):
             return False, f"RMSE {rmse:.3f} > threshold {QG_REG_RMSE_MAX}"
         return True, f"R2={r2:.3f}, RMSE={rmse:.3f}"
     else:
-        f1  = metrics.get("test_f1_macro", 0)
+        f1 = metrics.get("test_f1_macro", 0)
         acc = metrics.get("test_accuracy", 0)
         if f1 < QG_CLS_F1_MIN:
             return False, f"Macro F1 {f1:.3f} < threshold {QG_CLS_F1_MIN}"
@@ -271,19 +314,18 @@ def save_to_registry(pipe, model_name, split_label, task, metrics, passed_qg, le
     joblib.dump(artifact_dict, fname)
 
     entry = {
-        "model_name"  : model_name,
-        "split_label" : split_label,
-        "task"        : task,
-        "metrics"     : metrics,
+        "model_name": model_name,
+        "split_label": split_label,
+        "task": task,
+        "metrics": metrics,
         "quality_gate": "PASS" if passed_qg else "FAIL",
-        "file"        : str(fname.relative_to(ROOT)),
-        "saved_at"    : time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "file": str(fname.relative_to(ROOT)),
+        "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     return entry, str(fname)
 
 
-def push_to_wandb_registry(run, model_name, split_label, task, metrics,
-                           passed_qg, filepath, le=None):
+def push_to_wandb_registry(run, model_name, split_label, task, metrics, passed_qg, filepath, le=None):
     """Log model artifact to W&B and add to W&B Model Registry."""
     artifact_name = f"{model_name}_{split_label}"
     art = wandb.Artifact(
@@ -295,7 +337,7 @@ def push_to_wandb_registry(run, model_name, split_label, task, metrics,
             "quality_gate": "PASS" if passed_qg else "FAIL",
             "task": task,
             "split": split_label,
-        }
+        },
     )
     art.add_file(filepath)
     if le is not None:
@@ -328,7 +370,7 @@ def run_dbscan_analysis(X, y_reg, features_used):
     labels = db.fit_predict(X_pca)
 
     n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    n_noise    = list(labels).count(-1)
+    n_noise = list(labels).count(-1)
 
     print(f"  Clusters found : {n_clusters}")
     print(f"  Noise points   : {n_noise} ({100*n_noise/len(labels):.1f}%)")
@@ -341,9 +383,9 @@ def run_dbscan_analysis(X, y_reg, features_used):
         print(f"  {label:12s}: n={count:4d}, mean preparedness_score={mean_score:.1f}")
 
     result = {
-        "n_clusters"       : n_clusters,
-        "n_noise"          : n_noise,
-        "noise_pct"        : round(100 * n_noise / len(labels), 2),
+        "n_clusters": n_clusters,
+        "n_noise": n_noise,
+        "noise_pct": round(100 * n_noise / len(labels), 2),
         "pca_variance_expl": round(float(pca.explained_variance_ratio_.sum()), 4),
     }
 
@@ -370,6 +412,7 @@ def run_dbscan_analysis(X, y_reg, features_used):
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def main():
     print("=" * 70)
     print("PHASE 2 — TRAIN, EVALUATE, QUALITY GATE & REGISTER MODELS")
@@ -389,27 +432,23 @@ def main():
     for split_cfg in SPLIT_CONFIGS:
         label = split_cfg["label"]
         test_sz = split_cfg["test"]
-        val_sz  = split_cfg["val"] / (1 - test_sz)
+        val_sz = split_cfg["val"] / (1 - test_sz)
 
-        X_tr, X_te, y_tr, y_te = train_test_split(
-            X, y_reg, test_size=test_sz, random_state=42
-        )
-        X_tr, X_val, y_tr, y_val = train_test_split(
-            X_tr, y_tr, test_size=val_sz, random_state=42
-        )
+        X_tr, X_te, y_tr, y_te = train_test_split(X, y_reg, test_size=test_sz, random_state=42)
+        X_tr, X_val, y_tr, y_val = train_test_split(X_tr, y_tr, test_size=val_sz, random_state=42)
 
         for model_name, pipe in make_regression_pipelines().items():
             print(f"\n  [{label}] {model_name}")
             pipe.fit(X_tr, y_tr)
 
             metrics = {
-                "train_r2"  : round(r2_score(y_tr,  pipe.predict(X_tr)),  4),
-                "val_r2"    : round(r2_score(y_val, pipe.predict(X_val)), 4),
-                "test_r2"   : round(r2_score(y_te,  pipe.predict(X_te)),  4),
-                "train_rmse": round(np.sqrt(mean_squared_error(y_tr,  pipe.predict(X_tr))),  4),
-                "val_rmse"  : round(np.sqrt(mean_squared_error(y_val, pipe.predict(X_val))), 4),
-                "test_rmse" : round(np.sqrt(mean_squared_error(y_te,  pipe.predict(X_te))),  4),
-                "test_mae"  : round(mean_absolute_error(y_te, pipe.predict(X_te)), 4),
+                "train_r2": round(r2_score(y_tr, pipe.predict(X_tr)), 4),
+                "val_r2": round(r2_score(y_val, pipe.predict(X_val)), 4),
+                "test_r2": round(r2_score(y_te, pipe.predict(X_te)), 4),
+                "train_rmse": round(np.sqrt(mean_squared_error(y_tr, pipe.predict(X_tr))), 4),
+                "val_rmse": round(np.sqrt(mean_squared_error(y_val, pipe.predict(X_val))), 4),
+                "test_rmse": round(np.sqrt(mean_squared_error(y_te, pipe.predict(X_te))), 4),
+                "test_mae": round(mean_absolute_error(y_te, pipe.predict(X_te)), 4),
             }
 
             passed, reason = run_quality_gate("regression", metrics)
@@ -424,29 +463,24 @@ def main():
                         entity=WANDB_ENTITY,
                         name=f"reg_{model_name}_{label}",
                         config={
-                            "task": "regression", "model": model_name,
-                            "split": label, "features": len(features_used),
+                            "task": "regression",
+                            "model": model_name,
+                            "split": label,
+                            "features": len(features_used),
                             "quality_gate_threshold_r2": QG_REG_R2_MIN,
                             "quality_gate_threshold_rmse": QG_REG_RMSE_MAX,
                         },
                         reinit=True,
                     )
                     wandb.log({**metrics, "quality_gate_passed": int(passed)})
-                    entry, fpath = save_to_registry(
-                        pipe, model_name, label, "regression", metrics, passed
-                    )
-                    push_to_wandb_registry(run, model_name, label, "regression",
-                                           metrics, passed, fpath)
+                    entry, fpath = save_to_registry(pipe, model_name, label, "regression", metrics, passed)
+                    push_to_wandb_registry(run, model_name, label, "regression", metrics, passed, fpath)
                     wandb.finish()
                 except Exception as e:
                     print(f"    [WARN] W&B log failed: {e}")
-                    entry, fpath = save_to_registry(
-                        pipe, model_name, label, "regression", metrics, passed
-                    )
+                    entry, fpath = save_to_registry(pipe, model_name, label, "regression", metrics, passed)
             else:
-                entry, fpath = save_to_registry(
-                    pipe, model_name, label, "regression", metrics, passed
-                )
+                entry, fpath = save_to_registry(pipe, model_name, label, "regression", metrics, passed)
 
             all_registry_entries.append(entry)
 
@@ -461,7 +495,7 @@ def main():
     for split_cfg in SPLIT_CONFIGS:
         label = split_cfg["label"]
         test_sz = split_cfg["test"]
-        val_sz  = split_cfg["val"] / (1 - test_sz)
+        val_sz = split_cfg["val"] / (1 - test_sz)
 
         X_tr, X_te, y_tr, y_te = train_test_split(
             X, y_cls, test_size=test_sz, random_state=42, stratify=y_cls
@@ -475,18 +509,21 @@ def main():
             pipe.fit(X_tr, y_tr)
 
             metrics = {
-                "train_accuracy": round(accuracy_score(y_tr,  pipe.predict(X_tr)),  4),
-                "val_accuracy"  : round(accuracy_score(y_val, pipe.predict(X_val)), 4),
-                "test_accuracy" : round(accuracy_score(y_te,  pipe.predict(X_te)),  4),
-                "train_f1_macro": round(f1_score(y_tr,  pipe.predict(X_tr),  average="macro"), 4),
-                "val_f1_macro"  : round(f1_score(y_val, pipe.predict(X_val), average="macro"), 4),
-                "test_f1_macro" : round(f1_score(y_te,  pipe.predict(X_te),  average="macro"), 4),
+                "train_accuracy": round(accuracy_score(y_tr, pipe.predict(X_tr)), 4),
+                "val_accuracy": round(accuracy_score(y_val, pipe.predict(X_val)), 4),
+                "test_accuracy": round(accuracy_score(y_te, pipe.predict(X_te)), 4),
+                "train_f1_macro": round(f1_score(y_tr, pipe.predict(X_tr), average="macro"), 4),
+                "val_f1_macro": round(f1_score(y_val, pipe.predict(X_val), average="macro"), 4),
+                "test_f1_macro": round(f1_score(y_te, pipe.predict(X_te), average="macro"), 4),
                 "test_f1_weighted": round(f1_score(y_te, pipe.predict(X_te), average="weighted"), 4),
             }
 
             passed, reason = run_quality_gate("classification", metrics)
             status = "PASS" if passed else "FAIL"
-            print(f"    QG {status}: Acc={metrics['test_accuracy']:.3f}, F1={metrics['test_f1_macro']:.3f} | {reason}")
+            print(
+                f"    QG {status}: Acc={metrics['test_accuracy']:.3f}, "
+                f"F1={metrics['test_f1_macro']:.3f} | {reason}"
+            )
 
             if USE_WANDB:
                 try:
@@ -495,8 +532,10 @@ def main():
                         entity=WANDB_ENTITY,
                         name=f"cls_{model_name}_{label}",
                         config={
-                            "task": "classification", "model": model_name,
-                            "split": label, "features": len(features_used),
+                            "task": "classification",
+                            "model": model_name,
+                            "split": label,
+                            "features": len(features_used),
                             "quality_gate_threshold_f1": QG_CLS_F1_MIN,
                             "quality_gate_threshold_acc": QG_CLS_ACC_MIN,
                         },
@@ -506,8 +545,9 @@ def main():
                     entry, fpath = save_to_registry(
                         pipe, model_name, label, "classification", metrics, passed, le
                     )
-                    push_to_wandb_registry(run, model_name, label, "classification",
-                                           metrics, passed, fpath, le)
+                    push_to_wandb_registry(
+                        run, model_name, label, "classification", metrics, passed, fpath, le
+                    )
                     wandb.finish()
                 except Exception as e:
                     print(f"    [WARN] W&B log failed: {e}")
@@ -529,18 +569,18 @@ def main():
 
     # ── MANIFEST ────────────────────────────────────────────────────────────
     manifest = {
-        "generated_at"       : time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "total_runs"         : len(all_registry_entries),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "total_runs": len(all_registry_entries),
         "quality_gate_thresholds": {
-            "regression_r2_min"   : QG_REG_R2_MIN,
-            "regression_rmse_max" : QG_REG_RMSE_MAX,
-            "classification_f1_min"  : QG_CLS_F1_MIN,
-            "classification_acc_min" : QG_CLS_ACC_MIN,
+            "regression_r2_min": QG_REG_R2_MIN,
+            "regression_rmse_max": QG_REG_RMSE_MAX,
+            "classification_f1_min": QG_CLS_F1_MIN,
+            "classification_acc_min": QG_CLS_ACC_MIN,
         },
-        "champion_regression"    : best_reg["entry"],
+        "champion_regression": best_reg["entry"],
         "champion_classification": best_cls["entry"],
-        "dbscan_analysis"        : dbscan_result,
-        "all_runs"               : all_registry_entries,
+        "dbscan_analysis": dbscan_result,
+        "all_runs": all_registry_entries,
     }
 
     with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
