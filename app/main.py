@@ -352,6 +352,19 @@ def predict_single(v: VillageFeatures) -> PredictionResponse:
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
+@app.get("/", tags=["System"])
+def root():
+    return {
+        "title": "AI-Based Disaster Preparedness Assistant — Inference API",
+        "version": "2.0.0",
+        "status": "online",
+        "documentation": "/docs",
+        "health": "/health",
+        "model_info": "/model-info",
+        "sample_prediction": "/predict/sample",
+    }
+
+
 @app.get("/health", tags=["System"])
 def health():
     return {
